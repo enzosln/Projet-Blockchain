@@ -84,19 +84,46 @@ class Game(ARC4Contract):
         assert Txn.sender in self.user, "User must be registered"
         assert asset_id in self.asset, "Invalid asset ID"
 
-        user_balance = self.user[Txn.sender].balance.native
-        asset_price = self.asset[asset_id].price.native
-        assert user_balance >= (total := asset_price * quantity), "Insufficient funds"
+        balance = self.user[Txn.sender].balance.native
+        price = self.asset[asset_id].price.native
 
-        # Update user balance
-        self.user[Txn.sender].balance = arc4.UInt64(user_balance - total)
+        mbr = 2_500 + ((self.asset[asset_id].bytes.length + asset_id.length) * 400)
 
-        # Insert or update user-asset box
+        assert balance >= (
+            total := price * quantity + mbr * quantity
+        ), "Not enough funds"
+        self.user[Txn.sender].balance = arc4.UInt64(balance - total)
         user_asset_id = op.sha256(Txn.sender.bytes + asset_id)
         if user_asset_id in self.user_asset:
             self.user_asset[user_asset_id] += quantity
         else:
             self.user_asset[user_asset_id] = quantity
+
+    @arc4.abimethod
+    def resell_asset(self, asset_id: Hash, quantity: Quantity) -> None:
+        """Resell a game asset to the application.
+
+        Args:
+            asset_id (Hash): The hash of the asset name.
+            quantity (Quantity): The quantity to resell.
+        """
+        assert Txn.sender in self.user, "User must be registered"
+        assert asset_id in self.asset, "Invalid asset ID"
+
+        balance = self.user[Txn.sender].balance.native
+        price = self.asset[asset_id].price.native
+
+        mbr = 2_500 + ((self.asset[asset_id].bytes.length + asset_id.length) * 400)
+
+        user_asset_id = op.sha256(Txn.sender.bytes + asset_id)
+        assert user_asset_id in self.user_asset, "No assets"
+        assert (
+            self.user_asset[user_asset_id] >= quantity
+        ), "Insufficient number of assets"
+        self.user_asset[user_asset_id] -= quantity
+        if self.user_asset[user_asset_id] == 0:
+            del self.user_asset[user_asset_id]
+        self.user[Txn.sender].balance = arc4.UInt64(balance + (price * quantity) + mbr)
 
     @arc4.abimethod
     def admin_upsert_asset(self, asset: GameAsset) -> None:

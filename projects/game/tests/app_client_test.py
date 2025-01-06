@@ -198,12 +198,14 @@ def test_buy_asset(
         box(asset_box_name)
     )
 
+    mbr = 2_500 + (400 * (len(box(asset_box_name)) + len(asset_id)))
+
     # Construct payment transaction to fund the user's game account
     ptxn = PaymentTxn(
         sender=account.address,
         sp=algod_client.suggested_params(),
         receiver=app_client.app_address,
-        amt=asset_price * 2,
+        amt=asset_price * 2 + mbr * 2,
     )
 
     # Fund the user's account
@@ -250,8 +252,86 @@ def test_buy_asset(
     _, _, balance_after = user_box_abi.decode(box(user_box_name))
 
     # Test user balance in profile box
-    assert balance_before - (asset_price * 2) == balance_after
+    assert balance_before - (asset_price * 2 + mbr * 2) == balance_after
 
     # Test user-asset box value
     quantity_after = abi.UintType(64).decode(box(user_asset_box_name))
     assert quantity_after - 2 == quantity_before
+
+
+def test_resell(
+    algod_client: AlgodClient, app_client: GameClient, account: Account
+) -> None:
+    """Tests the `resell` method."""
+    box = lambda name: b64decode(
+        algod_client.application_box_by_name(app_client.app_id, name)["value"]
+    )
+
+    account = get_account(app_client.algod_client, "test_seller")
+    app_client.signer = AccountTransactionSigner(account.private_key)
+
+    user_box_name = b"user" + decode_address(account.address)
+    app_client.register(
+        name="Seller",
+        transaction_parameters=TransactionParameters(boxes=[(0, user_box_name)]),
+    )
+
+    asset_name = "POKEBALL"
+    asset_box_name = b"asset" + (
+        asset_id := sha256(abi.StringType().encode(asset_name)).digest()
+    )
+    _, _, asset_price = abi.ABIType.from_string("(string,string,uint64)").decode(
+        box(asset_box_name)
+    )
+
+    mbr = 2_500 + (400 * (len(box(asset_box_name)) + len(asset_id)))
+
+    ptxn = PaymentTxn(
+        sender=account.address,
+        sp=algod_client.suggested_params(),
+        receiver=app_client.app_address,
+        amt=asset_price * 2 + mbr * 2,
+    )
+    app_client.fund_account(
+        payment=TransactionWithSigner(
+            ptxn, AccountTransactionSigner(account.private_key)
+        ),
+        transaction_parameters=TransactionParameters(
+            boxes=[(0, b"user" + decode_address(account.address))]
+        ),
+    )
+
+    user_asset_box_name = (
+        b"user_asset" + sha256(decode_address(account.address) + asset_id).digest()
+    )
+    app_client.buy_asset(
+        asset_id=asset_id,
+        quantity=2,
+        transaction_parameters=TransactionParameters(
+            boxes=[(0, asset_box_name), (0, user_box_name), (0, user_asset_box_name)],
+        ),
+    )
+
+    _, _, balance_before = abi.ABIType.from_string("(uint64,string,uint64)").decode(
+        box(user_box_name)
+    )
+
+    quantity_before = abi.UintType(64).decode(box(user_asset_box_name))
+
+    app_client.resell_asset(
+        asset_id=asset_id,
+        quantity=1,
+        transaction_parameters=TransactionParameters(
+            boxes=[(0, asset_box_name), (0, user_box_name), (0, user_asset_box_name)],
+        ),
+    )
+
+    _, _, balance_after = abi.ABIType.from_string("(uint64,string,uint64)").decode(
+        box(user_box_name)
+    )
+    quantity_after = abi.UintType(64).decode(box(user_asset_box_name))
+
+    expected_refund = asset_price + mbr
+
+    assert balance_after == balance_before + expected_refund
+    assert quantity_after == quantity_before - 1
